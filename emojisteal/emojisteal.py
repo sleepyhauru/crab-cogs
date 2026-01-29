@@ -35,6 +35,33 @@ For a moving sticker, Discord limitations make it very annoying. Follow these st
 \n**Important:** """ + STICKER_TOO_BIG
 
 
+async def fetch_emoji_image(session: aiohttp.ClientSession, emoji: discord.PartialEmoji) -> bytes:
+    """
+    Fetch emoji bytes from Discord CDN.
+
+    Some animated emojis now 415 on the legacy .gif path. If that happens,
+    retry using animated WebP.
+    """
+    url = str(emoji.url)
+
+    async with session.get(url) as resp:
+        # Discord CDN may 415 on .gif for animated emojis; retry as animated webp
+        if resp.status == 415 and getattr(emoji, "animated", False):
+            webp_url = url.replace(".gif", ".webp")
+
+            # ensure animated=true is present
+            if "animated=" not in webp_url:
+                sep = "&" if "?" in webp_url else "?"
+                webp_url = f"{webp_url}{sep}animated=true"
+
+            async with session.get(webp_url) as resp2:
+                resp2.raise_for_status()
+                return await resp2.read()
+
+        resp.raise_for_status()
+        return await resp.read()
+
+
 class EmojiSteal(commands.Cog):
     """Steals emojis and stickers sent by other people and optionally uploads them to your own server. Supports context menu commands."""
 
@@ -136,9 +163,7 @@ class EmojiSteal(commands.Cog):
                     break
 
                 try:
-                    async with session.get(emoji.url) as resp:
-                        resp.raise_for_status()
-                        image = io.BytesIO(await resp.read()).read()
+                    image = await fetch_emoji_image(session, emoji)
                     added = await ctx.guild.create_custom_emoji(name=name or emoji.name, image=image)
 
                 except (aiohttp.ClientError, discord.DiscordException) as error:
@@ -193,9 +218,7 @@ class EmojiSteal(commands.Cog):
                     return await ctx.edit_original_response(content=response)
 
                 try:
-                    async with session.get(emoji.url) as resp:
-                        resp.raise_for_status()
-                        image = io.BytesIO(await resp.read()).read()
+                    image = await fetch_emoji_image(session, emoji)
                     added = await ctx.guild.create_custom_emoji(name=emoji.name, image=image)
 
                 except (aiohttp.ClientError, discord.DiscordException) as error:
